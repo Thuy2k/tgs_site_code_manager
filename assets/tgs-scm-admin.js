@@ -17,6 +17,12 @@
         stopRequested: false
     };
 
+    var timeApplyState = {
+        offset: 0,
+        updated: 0,
+        running: false
+    };
+
     var importModes = {
         sites: {
             previewAction: 'tgs_scm_preview_import',
@@ -485,8 +491,88 @@
         $('#tgs-scm-stop-button').on('click', stopImport);
     }
 
+    function setTimeApplyStatus(message, type) {
+        var $status = $('#tgs-scm-time-apply-status');
+        if (!$status.length) return;
+
+        $status
+            .removeClass('is-ok is-error is-muted')
+            .addClass(type ? 'is-' + type : 'is-muted')
+            .text(message || '');
+    }
+
+    function updateTimeApplyProgress(processed, total) {
+        total = Number(total || 0);
+        processed = Math.min(Number(processed || 0), total);
+
+        var percent = total > 0 ? Math.round((processed / total) * 100) : 0;
+        $('#tgs-scm-time-apply-progress').prop('hidden', false);
+        $('#tgs-scm-time-apply-fill').css('width', percent + '%');
+        $('#tgs-scm-time-apply-meta').text('Tien do: ' + processed + '/' + total + ' website (' + percent + '%)');
+    }
+
+    function applyTimeSettingsBatch() {
+        $.post(cfg.ajaxUrl, {
+            action: 'tgs_scm_apply_time_settings',
+            nonce: cfg.nonce,
+            offset: timeApplyState.offset,
+            limit: 50,
+            timezone_string: $('#timezone_string').val() || '',
+            date_format: $('#date_format').val() || '',
+            time_format: $('#time_format').val() || '',
+            start_of_week: $('#start_of_week').val() || 1
+        }).done(function (res) {
+            if (!res || !res.success) {
+                timeApplyState.running = false;
+                $('#tgs-scm-apply-time-settings').prop('disabled', false);
+                setTimeApplyStatus((res && res.data && res.data.message) || 'Ap dung cau hinh that bai.', 'error');
+                return;
+            }
+
+            var data = res.data || {};
+            timeApplyState.offset = data.next_offset || timeApplyState.offset;
+            timeApplyState.updated += Number(data.updated || 0);
+            updateTimeApplyProgress(timeApplyState.offset, data.total || 0);
+
+            if (data.done) {
+                timeApplyState.running = false;
+                $('#tgs-scm-apply-time-settings').prop('disabled', false);
+                setTimeApplyStatus((data.message || 'Da ap dung cau hinh gio cho toan bo website.') + ' Tong so website da xu ly: ' + timeApplyState.updated + '.', 'ok');
+                return;
+            }
+
+            setTimeApplyStatus(data.message || 'Dang ap dung cau hinh gio...', 'muted');
+            window.setTimeout(applyTimeSettingsBatch, 200);
+        }).fail(function () {
+            timeApplyState.running = false;
+            $('#tgs-scm-apply-time-settings').prop('disabled', false);
+            setTimeApplyStatus('Ap dung cau hinh that bai.', 'error');
+        });
+    }
+
+    function startTimeApply() {
+        if (timeApplyState.running) return;
+
+        timeApplyState.offset = 0;
+        timeApplyState.updated = 0;
+        timeApplyState.running = true;
+        $('#tgs-scm-time-apply-progress').prop('hidden', true);
+        $('#tgs-scm-time-apply-fill').css('width', '0%');
+        $('#tgs-scm-time-apply-meta').text('Chua ap dung.');
+        $('#tgs-scm-apply-time-settings').prop('disabled', true);
+        setTimeApplyStatus('Dang ap dung cau hinh gio cho toan bo website...', 'muted');
+        applyTimeSettingsBatch();
+    }
+
+    function bindTimeSettingsUi() {
+        if (!$('#tgs-scm-apply-time-settings').length) return;
+
+        $('#tgs-scm-apply-time-settings').on('click', startTimeApply);
+    }
+
     $(function () {
         bindSiteCodeValidation();
         bindImportUi();
+        bindTimeSettingsUi();
     });
 })(jQuery);

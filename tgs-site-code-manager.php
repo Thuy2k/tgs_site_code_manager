@@ -19,6 +19,7 @@ define( 'TGS_SCM_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
 final class TGS_Site_Code_Manager {
 	const COLUMN_SITE_CODE = 'tgs_site_code';
 	const OPTION_SITE_CODE = 'tgs_website_code';
+	const NETWORK_TIME_SETTINGS_OPTION = 'tgs_scm_network_time_settings';
 	const TRANSIENT_PREFIX = 'tgs_scm_import_';
 	const IMPORT_TTL       = 3600;
 
@@ -41,6 +42,7 @@ final class TGS_Site_Code_Manager {
 		add_action( 'wp_ajax_tgs_scm_import_sites', array( __CLASS__, 'ajax_import_sites' ) );
 		add_action( 'wp_ajax_tgs_scm_preview_user_import', array( __CLASS__, 'ajax_preview_user_import' ) );
 		add_action( 'wp_ajax_tgs_scm_import_users', array( __CLASS__, 'ajax_import_users' ) );
+		add_action( 'wp_ajax_tgs_scm_apply_time_settings', array( __CLASS__, 'ajax_apply_time_settings' ) );
 	}
 
 	public static function activate( $network_wide ) {
@@ -114,6 +116,15 @@ final class TGS_Site_Code_Manager {
 			'tgs-site-user-import',
 			array( __CLASS__, 'render_user_import_page' )
 		);
+
+		add_submenu_page(
+			'settings.php',
+			'Gio Viet Nam TGS',
+			'Gio Viet Nam TGS',
+			'manage_network_options',
+			'tgs-network-time-settings',
+			array( __CLASS__, 'render_time_settings_page' )
+		);
 	}
 
 	public static function enqueue_assets( $hook_suffix ) {
@@ -125,8 +136,9 @@ final class TGS_Site_Code_Manager {
 		$is_site_new = 'site-new.php' === $pagenow;
 		$is_import   = false !== strpos( (string) $hook_suffix, 'tgs-site-code-import' );
 		$is_user_import = false !== strpos( (string) $hook_suffix, 'tgs-site-user-import' );
+		$is_time_settings = false !== strpos( (string) $hook_suffix, 'tgs-network-time-settings' );
 
-		if ( ! $is_site_new && ! $is_import && ! $is_user_import ) {
+		if ( ! $is_site_new && ! $is_import && ! $is_user_import && ! $is_time_settings ) {
 			return;
 		}
 
@@ -154,6 +166,7 @@ final class TGS_Site_Code_Manager {
 				'isSiteNew'   => $is_site_new,
 				'isImport'    => $is_import,
 				'isUserImport' => $is_user_import,
+				'isTimeSettings' => $is_time_settings,
 				'importKind'   => $is_user_import ? 'users' : 'sites',
 				'networkHome' => network_home_url(),
 				'i18n'        => array(
@@ -249,16 +262,16 @@ final class TGS_Site_Code_Manager {
 			$code = self::get_request_import_code_for_site( $site );
 		}
 
-		if ( '' === $code ) {
-			return $args;
-		}
-
 		if ( empty( $args['options'] ) || ! is_array( $args['options'] ) ) {
 			$args['options'] = array();
 		}
 
-		$args['options'][ self::OPTION_SITE_CODE ] = $code;
-		$args['options']['tgs_site_code']          = $code;
+		if ( '' !== $code ) {
+			$args['options'][ self::OPTION_SITE_CODE ] = $code;
+			$args['options']['tgs_site_code']          = $code;
+		}
+
+		$args['options'] = self::merge_time_settings_into_options( $args['options'] );
 
 		return $args;
 	}
@@ -633,6 +646,87 @@ final class TGS_Site_Code_Manager {
 		);
 	}
 
+	public static function ajax_apply_time_settings() {
+		self::check_ajax_permission( 'manage_network_options' );
+
+		$settings = self::get_network_time_settings();
+		if ( isset( $_POST['timezone_string'], $_POST['date_format'], $_POST['time_format'], $_POST['start_of_week'] ) ) {
+			$posted = self::sanitize_time_settings(
+				array(
+					'timezone_string' => wp_unslash( $_POST['timezone_string'] ),
+					'date_format'     => wp_unslash( $_POST['date_format'] ),
+					'time_format'     => wp_unslash( $_POST['time_format'] ),
+					'start_of_week'   => wp_unslash( $_POST['start_of_week'] ),
+				)
+			);
+
+			if ( is_wp_error( $posted ) ) {
+				wp_send_json_error( array( 'message' => $posted->get_error_message() ) );
+			}
+
+			update_site_option( self::NETWORK_TIME_SETTINGS_OPTION, $posted );
+			$settings = $posted;
+		}
+
+		$offset   = isset( $_POST['offset'] ) ? max( 0, absint( $_POST['offset'] ) ) : 0;
+		$limit    = isset( $_POST['limit'] ) ? max( 1, min( 100, absint( $_POST['limit'] ) ) ) : 50;
+		$total    = (int) get_sites(
+			array(
+				'count'    => true,
+				'number'   => 0,
+				'archived' => 0,
+				'spam'     => 0,
+				'deleted'  => 0,
+			)
+		);
+
+		if ( $offset >= $total ) {
+			wp_send_json_success(
+				array(
+					'message'     => 'Da ap dung cau hinh gio cho toan bo website.',
+					'updated'     => 0,
+					'offset'      => $offset,
+					'next_offset' => $offset,
+					'total'       => $total,
+					'done'        => true,
+				)
+			);
+		}
+
+		$blog_ids = get_sites(
+			array(
+				'fields'   => 'ids',
+				'number'   => $limit,
+				'offset'   => $offset,
+				'orderby'  => 'id',
+				'order'    => 'ASC',
+				'archived' => 0,
+				'spam'     => 0,
+				'deleted'  => 0,
+			)
+		);
+
+		$updated = 0;
+		foreach ( $blog_ids as $blog_id ) {
+			self::apply_time_settings_to_site( (int) $blog_id, $settings );
+			$updated++;
+		}
+
+		$next_offset = $offset + count( $blog_ids );
+		$done        = $next_offset >= $total;
+
+		wp_send_json_success(
+			array(
+				'message'     => $done ? 'Da ap dung cau hinh gio cho toan bo website.' : 'Da ap dung ' . $next_offset . '/' . $total . ' website.',
+				'updated'     => $updated,
+				'offset'      => $offset,
+				'next_offset' => $next_offset,
+				'total'       => $total,
+				'done'        => $done,
+			)
+		);
+	}
+
 	public static function render_import_page() {
 		if ( ! current_user_can( 'create_sites' ) ) {
 			wp_die( esc_html__( 'Sorry, you are not allowed to add sites to this network.', 'tgs-site-code-manager' ) );
@@ -643,6 +737,105 @@ final class TGS_Site_Code_Manager {
 			<p class="description">File .xlsx can co cac cot: website, ma, ten/tieu de website, email website. Import se tao tung site lan luot theo luong tao site chuan cua WordPress.</p>
 
 			<?php self::render_import_controls( 'sites' ); ?>
+		</div>
+		<?php
+	}
+
+	public static function render_time_settings_page() {
+		if ( ! current_user_can( 'manage_network_options' ) ) {
+			wp_die( esc_html__( 'Sorry, you are not allowed to manage network options.', 'tgs-site-code-manager' ) );
+		}
+
+		$settings = self::get_network_time_settings();
+		$message  = '';
+		$error    = '';
+
+		if ( isset( $_POST['tgs_scm_save_time_settings'] ) ) {
+			check_admin_referer( 'tgs_scm_save_time_settings' );
+
+			$posted = self::sanitize_time_settings(
+				array(
+					'timezone_string' => isset( $_POST['timezone_string'] ) ? wp_unslash( $_POST['timezone_string'] ) : '',
+					'date_format'     => isset( $_POST['date_format'] ) ? wp_unslash( $_POST['date_format'] ) : '',
+					'time_format'     => isset( $_POST['time_format'] ) ? wp_unslash( $_POST['time_format'] ) : '',
+					'start_of_week'   => isset( $_POST['start_of_week'] ) ? wp_unslash( $_POST['start_of_week'] ) : 1,
+				)
+			);
+
+			if ( is_wp_error( $posted ) ) {
+				$error = $posted->get_error_message();
+			} else {
+				update_site_option( self::NETWORK_TIME_SETTINGS_OPTION, $posted );
+				$settings = $posted;
+				$message  = 'Da luu cau hinh. Bam nut ap dung de cap nhat toan bo website hien co.';
+			}
+		}
+
+		$selected_timezone = self::timezone_choice_value( $settings );
+		$date_preview      = self::format_preview_date( $settings['date_format'], $settings );
+		$time_preview      = self::format_preview_date( $settings['time_format'], $settings );
+		?>
+		<div class="wrap tgs-scm-time-page">
+			<h1>Gio Viet Nam TGS</h1>
+			<p class="description">Cau hinh nay luu o Network Admin va ap dung xuong option cua tung website trong multisite.</p>
+
+			<?php if ( '' !== $message ) : ?>
+				<div class="notice notice-success"><p><?php echo esc_html( $message ); ?></p></div>
+			<?php endif; ?>
+
+			<?php if ( '' !== $error ) : ?>
+				<div class="notice notice-error"><p><?php echo esc_html( $error ); ?></p></div>
+			<?php endif; ?>
+
+			<form method="post" id="tgs-scm-time-settings-form">
+				<?php wp_nonce_field( 'tgs_scm_save_time_settings' ); ?>
+				<table class="form-table" role="presentation">
+					<tr>
+						<th scope="row"><label for="timezone_string">Timezone</label></th>
+						<td>
+							<select id="timezone_string" name="timezone_string">
+								<?php echo wp_timezone_choice( $selected_timezone, get_user_locale() ); ?>
+							</select>
+							<p class="description">Mac dinh he thong TGS dang dung UTC+7.</p>
+						</td>
+					</tr>
+					<tr>
+						<th scope="row"><label for="date_format">Date Format</label></th>
+						<td>
+							<input type="text" class="regular-text" id="date_format" name="date_format" value="<?php echo esc_attr( $settings['date_format'] ); ?>" />
+							<p class="description">Gia tri de xuat: <code>d/m/Y</code>. Preview: <strong><?php echo esc_html( $date_preview ); ?></strong></p>
+						</td>
+					</tr>
+					<tr>
+						<th scope="row"><label for="time_format">Time Format</label></th>
+						<td>
+							<input type="text" class="regular-text" id="time_format" name="time_format" value="<?php echo esc_attr( $settings['time_format'] ); ?>" />
+							<p class="description">Gia tri de xuat: <code>g:i a</code>. Preview: <strong><?php echo esc_html( $time_preview ); ?></strong></p>
+						</td>
+					</tr>
+					<tr>
+						<th scope="row"><label for="start_of_week">Week Starts On</label></th>
+						<td>
+							<select id="start_of_week" name="start_of_week">
+								<?php self::render_weekday_options( (int) $settings['start_of_week'] ); ?>
+							</select>
+						</td>
+					</tr>
+				</table>
+
+				<p class="submit">
+					<button type="submit" class="button button-primary" name="tgs_scm_save_time_settings" value="1">Luu cau hinh</button>
+					<button type="button" class="button" id="tgs-scm-apply-time-settings">Ap dung cho toan bo website</button>
+				</p>
+			</form>
+
+			<div id="tgs-scm-time-apply-status" class="tgs-scm-import-status" role="status"></div>
+			<div id="tgs-scm-time-apply-progress" class="tgs-scm-import-progress" hidden>
+				<div class="tgs-scm-progress-track">
+					<span id="tgs-scm-time-apply-fill" class="tgs-scm-progress-fill" style="width: 0%;"></span>
+				</div>
+				<div id="tgs-scm-time-apply-meta" class="tgs-scm-progress-meta">Chua ap dung.</div>
+			</div>
 		</div>
 		<?php
 	}
@@ -740,6 +933,146 @@ final class TGS_Site_Code_Manager {
 		}
 
 		self::ensure_schema();
+	}
+
+	private static function default_time_settings() {
+		return array(
+			'timezone_string' => '',
+			'gmt_offset'      => '7',
+			'date_format'     => 'd/m/Y',
+			'time_format'     => 'g:i a',
+			'start_of_week'   => 1,
+		);
+	}
+
+	private static function get_network_time_settings() {
+		$settings = get_site_option( self::NETWORK_TIME_SETTINGS_OPTION, array() );
+		if ( ! is_array( $settings ) ) {
+			$settings = array();
+		}
+
+		$settings = array_merge( self::default_time_settings(), $settings );
+		$settings = self::sanitize_time_settings( $settings );
+
+		return is_wp_error( $settings ) ? self::default_time_settings() : $settings;
+	}
+
+	private static function sanitize_time_settings( $settings ) {
+		$settings = is_array( $settings ) ? $settings : array();
+		$timezone = isset( $settings['timezone_string'] ) ? trim( (string) $settings['timezone_string'] ) : '';
+		$offset   = isset( $settings['gmt_offset'] ) ? (string) $settings['gmt_offset'] : '7';
+
+		if ( '' !== $timezone && preg_match( '/^UTC[+-]/', $timezone ) ) {
+			$offset   = preg_replace( '/UTC\+?/', '', $timezone );
+			$timezone = '';
+		} elseif ( '' !== $timezone && ! in_array( $timezone, timezone_identifiers_list( DateTimeZone::ALL_WITH_BC ), true ) ) {
+			return new WP_Error( 'invalid_timezone', 'Timezone khong hop le.' );
+		} elseif ( '' === $timezone ) {
+			$offset = '' !== $offset ? $offset : '7';
+		}
+
+		if ( '' === $timezone && ! is_numeric( $offset ) ) {
+			return new WP_Error( 'invalid_gmt_offset', 'GMT offset khong hop le.' );
+		}
+
+		$date_format   = isset( $settings['date_format'] ) ? sanitize_option( 'date_format', $settings['date_format'] ) : 'd/m/Y';
+		$time_format   = isset( $settings['time_format'] ) ? sanitize_option( 'time_format', $settings['time_format'] ) : 'g:i a';
+		$start_of_week = isset( $settings['start_of_week'] ) ? (int) $settings['start_of_week'] : 1;
+
+		if ( '' === $date_format ) {
+			$date_format = 'd/m/Y';
+		}
+
+		if ( '' === $time_format ) {
+			$time_format = 'g:i a';
+		}
+
+		if ( $start_of_week < 0 || $start_of_week > 6 ) {
+			$start_of_week = 1;
+		}
+
+		return array(
+			'timezone_string' => $timezone,
+			'gmt_offset'      => (string) $offset,
+			'date_format'     => $date_format,
+			'time_format'     => $time_format,
+			'start_of_week'   => $start_of_week,
+		);
+	}
+
+	private static function timezone_choice_value( $settings ) {
+		$timezone = isset( $settings['timezone_string'] ) ? (string) $settings['timezone_string'] : '';
+		if ( '' !== $timezone ) {
+			return $timezone;
+		}
+
+		$offset = isset( $settings['gmt_offset'] ) ? (float) $settings['gmt_offset'] : 7;
+		if ( 0.0 === $offset ) {
+			return 'UTC+0';
+		}
+
+		return $offset > 0 ? 'UTC+' . $offset : 'UTC' . $offset;
+	}
+
+	private static function merge_time_settings_into_options( $options ) {
+		$settings = self::get_network_time_settings();
+		return array_merge( $options, self::time_settings_to_blog_options( $settings ) );
+	}
+
+	private static function time_settings_to_blog_options( $settings ) {
+		return array(
+			'timezone_string' => $settings['timezone_string'],
+			'gmt_offset'      => $settings['gmt_offset'],
+			'date_format'     => $settings['date_format'],
+			'time_format'     => $settings['time_format'],
+			'start_of_week'   => (int) $settings['start_of_week'],
+		);
+	}
+
+	private static function apply_time_settings_to_site( $blog_id, $settings = null ) {
+		$blog_id = (int) $blog_id;
+		if ( $blog_id <= 0 ) {
+			return false;
+		}
+
+		$settings = is_array( $settings ) ? $settings : self::get_network_time_settings();
+		foreach ( self::time_settings_to_blog_options( $settings ) as $option => $value ) {
+			update_blog_option( $blog_id, $option, $value );
+		}
+
+		clean_blog_cache( $blog_id );
+		return true;
+	}
+
+	private static function format_preview_date( $format, $settings ) {
+		$timestamp = time();
+		$timezone  = isset( $settings['timezone_string'] ) && '' !== $settings['timezone_string'] ? $settings['timezone_string'] : self::timezone_choice_value( $settings );
+
+		if ( 0 === strpos( $timezone, 'UTC' ) ) {
+			$offset = isset( $settings['gmt_offset'] ) ? (float) $settings['gmt_offset'] : 0;
+			return gmdate( $format, $timestamp + (int) ( $offset * HOUR_IN_SECONDS ) );
+		}
+
+		try {
+			$date = new DateTime( '@' . $timestamp );
+			$date->setTimezone( new DateTimeZone( $timezone ) );
+			return $date->format( $format );
+		} catch ( Exception $e ) {
+			return gmdate( $format, $timestamp );
+		}
+	}
+
+	private static function render_weekday_options( $selected ) {
+		global $wp_locale;
+
+		for ( $day_index = 0; $day_index <= 6; $day_index++ ) {
+			printf(
+				'<option value="%1$d"%2$s>%3$s</option>',
+				(int) $day_index,
+				selected( $selected, $day_index, false ),
+				esc_html( $wp_locale->get_weekday( $day_index ) )
+			);
+		}
 	}
 
 	private static function normalize_code( $code ) {
@@ -1562,6 +1895,7 @@ final class TGS_Site_Code_Manager {
 			'tgs_site_code'          => $code,
 			'admin_email'            => $email,
 		);
+		$meta = self::merge_time_settings_into_options( $meta );
 
 		self::$pending_site_code = $code;
 		$key = strtolower( $newdomain . '|' . trailingslashit( $path ) );
