@@ -39,6 +39,8 @@ final class TGS_Site_Code_Manager {
 		add_action( 'wp_ajax_tgs_scm_upload_excel', array( __CLASS__, 'ajax_upload_excel' ) );
 		add_action( 'wp_ajax_tgs_scm_preview_import', array( __CLASS__, 'ajax_preview_import' ) );
 		add_action( 'wp_ajax_tgs_scm_import_sites', array( __CLASS__, 'ajax_import_sites' ) );
+		add_action( 'wp_ajax_tgs_scm_preview_user_import', array( __CLASS__, 'ajax_preview_user_import' ) );
+		add_action( 'wp_ajax_tgs_scm_import_users', array( __CLASS__, 'ajax_import_users' ) );
 	}
 
 	public static function activate( $network_wide ) {
@@ -103,6 +105,15 @@ final class TGS_Site_Code_Manager {
 			'tgs-site-code-import',
 			array( __CLASS__, 'render_import_page' )
 		);
+
+		add_submenu_page(
+			'sites.php',
+			'Import user website TGS',
+			'Import user website TGS',
+			'manage_network_users',
+			'tgs-site-user-import',
+			array( __CLASS__, 'render_user_import_page' )
+		);
 	}
 
 	public static function enqueue_assets( $hook_suffix ) {
@@ -113,8 +124,9 @@ final class TGS_Site_Code_Manager {
 		$pagenow = isset( $GLOBALS['pagenow'] ) ? $GLOBALS['pagenow'] : '';
 		$is_site_new = 'site-new.php' === $pagenow;
 		$is_import   = false !== strpos( (string) $hook_suffix, 'tgs-site-code-import' );
+		$is_user_import = false !== strpos( (string) $hook_suffix, 'tgs-site-user-import' );
 
-		if ( ! $is_site_new && ! $is_import ) {
+		if ( ! $is_site_new && ! $is_import && ! $is_user_import ) {
 			return;
 		}
 
@@ -141,6 +153,8 @@ final class TGS_Site_Code_Manager {
 				'nonce'       => wp_create_nonce( 'tgs_scm_admin' ),
 				'isSiteNew'   => $is_site_new,
 				'isImport'    => $is_import,
+				'isUserImport' => $is_user_import,
+				'importKind'   => $is_user_import ? 'users' : 'sites',
 				'networkHome' => network_home_url(),
 				'i18n'        => array(
 					'checking'       => 'Dang kiem tra...',
@@ -316,13 +330,18 @@ final class TGS_Site_Code_Manager {
 	}
 
 	public static function ajax_upload_excel() {
-		self::check_ajax_permission();
+		self::check_ajax_permission( array( 'create_sites', 'manage_network_users' ) );
 
 		if ( empty( $_FILES['file'] ) || ! is_array( $_FILES['file'] ) ) {
 			wp_send_json_error( array( 'message' => 'Chua chon file Excel.' ) );
 		}
 
 		$file = $_FILES['file'];
+		$kind = isset( $_POST['kind'] ) ? sanitize_key( wp_unslash( $_POST['kind'] ) ) : 'sites';
+		if ( ! in_array( $kind, array( 'sites', 'users' ), true ) ) {
+			$kind = 'sites';
+		}
+
 		if ( ! empty( $file['error'] ) ) {
 			wp_send_json_error( array( 'message' => self::upload_error_message( (int) $file['error'] ) ) );
 		}
@@ -354,6 +373,7 @@ final class TGS_Site_Code_Manager {
 			array(
 				'file'      => $upload['file'],
 				'name'      => sanitize_file_name( $file['name'] ),
+				'kind'      => $kind,
 				'created'   => time(),
 				'previewed' => false,
 			),
@@ -370,7 +390,7 @@ final class TGS_Site_Code_Manager {
 	}
 
 	public static function ajax_preview_import() {
-		self::check_ajax_permission();
+		self::check_ajax_permission( 'create_sites' );
 
 		$token = isset( $_POST['token'] ) ? sanitize_text_field( wp_unslash( $_POST['token'] ) ) : '';
 		$sheet = isset( $_POST['sheet'] ) ? sanitize_text_field( wp_unslash( $_POST['sheet'] ) ) : '';
@@ -378,6 +398,10 @@ final class TGS_Site_Code_Manager {
 
 		if ( is_wp_error( $state ) ) {
 			wp_send_json_error( array( 'message' => $state->get_error_message() ) );
+		}
+
+		if ( ! empty( $state['kind'] ) && 'sites' !== $state['kind'] ) {
+			wp_send_json_error( array( 'message' => 'Phien import khong dung loai du lieu.' ) );
 		}
 
 		if ( '' === $sheet ) {
@@ -402,12 +426,16 @@ final class TGS_Site_Code_Manager {
 	}
 
 	public static function ajax_import_sites() {
-		self::check_ajax_permission();
+		self::check_ajax_permission( 'create_sites' );
 
 		$token = isset( $_POST['token'] ) ? sanitize_text_field( wp_unslash( $_POST['token'] ) ) : '';
 		$state = self::get_import_state( $token );
 		if ( is_wp_error( $state ) ) {
 			wp_send_json_error( array( 'message' => $state->get_error_message() ) );
+		}
+
+		if ( ! empty( $state['kind'] ) && 'sites' !== $state['kind'] ) {
+			wp_send_json_error( array( 'message' => 'Phien import khong dung loai du lieu.' ) );
 		}
 
 		if ( empty( $state['previewed'] ) ) {
@@ -431,6 +459,7 @@ final class TGS_Site_Code_Manager {
 				array(
 					'message'     => 'Import da hoan tat.',
 					'created'     => array(),
+					'skipped'     => array(),
 					'offset'      => $offset,
 					'next_offset' => $offset,
 					'total'       => $total,
@@ -469,6 +498,132 @@ final class TGS_Site_Code_Manager {
 			array(
 				'message'     => $done ? 'Import da xu ly xong ' . $total . ' dong hop le.' : 'Da xu ly ' . $next_offset . '/' . $total . ' dong hop le.',
 				'created'     => $created,
+				'skipped'     => array(),
+				'errors'      => $errors,
+				'offset'      => $offset,
+				'next_offset' => $next_offset,
+				'total'       => $total,
+				'done'        => $done,
+			)
+		);
+	}
+
+	public static function ajax_preview_user_import() {
+		self::check_ajax_permission( 'manage_network_users' );
+
+		$token = isset( $_POST['token'] ) ? sanitize_text_field( wp_unslash( $_POST['token'] ) ) : '';
+		$sheet = isset( $_POST['sheet'] ) ? sanitize_text_field( wp_unslash( $_POST['sheet'] ) ) : '';
+		$state = self::get_import_state( $token );
+
+		if ( is_wp_error( $state ) ) {
+			wp_send_json_error( array( 'message' => $state->get_error_message() ) );
+		}
+
+		if ( ! empty( $state['kind'] ) && 'users' !== $state['kind'] ) {
+			wp_send_json_error( array( 'message' => 'Phien import khong dung loai du lieu.' ) );
+		}
+
+		if ( '' === $sheet ) {
+			wp_send_json_error( array( 'message' => 'Chua chon sheet Excel.' ) );
+		}
+
+		$reader = new TGS_SCM_Xlsx_Reader( $state['file'] );
+		$rows = $reader->get_rows( $sheet );
+		if ( is_wp_error( $rows ) ) {
+			wp_send_json_error( array( 'message' => $rows->get_error_message() ) );
+		}
+
+		$preview = self::build_user_import_preview( $rows );
+		$state['sheet']      = $sheet;
+		$state['previewed']  = true;
+		$state['has_errors'] = $preview['has_errors'];
+		$state['valid_rows'] = $preview['valid_rows'];
+		set_transient( self::TRANSIENT_PREFIX . $token, $state, self::IMPORT_TTL );
+
+		unset( $preview['valid_rows'] );
+		wp_send_json_success( $preview );
+	}
+
+	public static function ajax_import_users() {
+		self::check_ajax_permission( 'manage_network_users' );
+
+		$token = isset( $_POST['token'] ) ? sanitize_text_field( wp_unslash( $_POST['token'] ) ) : '';
+		$state = self::get_import_state( $token );
+		if ( is_wp_error( $state ) ) {
+			wp_send_json_error( array( 'message' => $state->get_error_message() ) );
+		}
+
+		if ( ! empty( $state['kind'] ) && 'users' !== $state['kind'] ) {
+			wp_send_json_error( array( 'message' => 'Phien import khong dung loai du lieu.' ) );
+		}
+
+		if ( empty( $state['previewed'] ) ) {
+			wp_send_json_error( array( 'message' => 'Can kiem tra truoc du lieu truoc khi import.' ) );
+		}
+
+		$valid_rows = ! empty( $state['valid_rows'] ) && is_array( $state['valid_rows'] ) ? $state['valid_rows'] : array();
+		if ( empty( $valid_rows ) ) {
+			wp_send_json_error( array( 'message' => 'Khong co dong hop le de import.' ) );
+		}
+
+		$offset = isset( $_POST['offset'] ) ? max( 0, absint( $_POST['offset'] ) ) : 0;
+		$limit  = isset( $_POST['limit'] ) ? max( 1, min( 20, absint( $_POST['limit'] ) ) ) : 10;
+		$total  = count( $valid_rows );
+
+		if ( $offset >= $total ) {
+			self::finish_import_state( $token, $state );
+			wp_send_json_success(
+				array(
+					'message'     => 'Import user da hoan tat.',
+					'created'     => array(),
+					'skipped'     => array(),
+					'errors'      => array(),
+					'offset'      => $offset,
+					'next_offset' => $offset,
+					'total'       => $total,
+					'done'        => true,
+				)
+			);
+		}
+
+		$created    = array();
+		$skipped    = array();
+		$errors     = array();
+		$batch_rows = array_slice( $valid_rows, $offset, $limit );
+
+		foreach ( $batch_rows as $row ) {
+			$result = self::create_user_from_import_row( $row );
+			if ( is_wp_error( $result ) ) {
+				$errors[] = array(
+					'row'      => isset( $row['row_number'] ) ? (int) $row['row_number'] : 0,
+					'website'  => isset( $row['website'] ) ? $row['website'] : '',
+					'code'     => isset( $row['code'] ) ? $row['code'] : '',
+					'username' => isset( $row['username'] ) ? $row['username'] : '',
+					'message'  => $result->get_error_message(),
+				);
+				continue;
+			}
+
+			if ( ! empty( $result['skipped'] ) ) {
+				$skipped[] = $result;
+				continue;
+			}
+
+			$created[] = $result;
+		}
+
+		$next_offset = $offset + count( $batch_rows );
+		$done        = $next_offset >= $total;
+
+		if ( $done ) {
+			self::finish_import_state( $token, $state );
+		}
+
+		wp_send_json_success(
+			array(
+				'message'     => $done ? 'Import da xu ly xong ' . $total . ' dong hop le.' : 'Da xu ly ' . $next_offset . '/' . $total . ' dong hop le.',
+				'created'     => $created,
+				'skipped'     => $skipped,
 				'errors'      => $errors,
 				'offset'      => $offset,
 				'next_offset' => $next_offset,
@@ -487,14 +642,30 @@ final class TGS_Site_Code_Manager {
 			<h1>Import website TGS</h1>
 			<p class="description">File .xlsx can co cac cot: website, ma, ten/tieu de website, email website. Import se tao tung site lan luot theo luong tao site chuan cua WordPress.</p>
 
-			<?php self::render_import_controls(); ?>
+			<?php self::render_import_controls( 'sites' ); ?>
 		</div>
 		<?php
 	}
 
-	private static function render_import_controls() {
+	public static function render_user_import_page() {
+		if ( ! current_user_can( 'manage_network_users' ) ) {
+			wp_die( esc_html__( 'Sorry, you are not allowed to manage network users.', 'tgs-site-code-manager' ) );
+		}
 		?>
-		<div class="tgs-scm-import-panel">
+		<div class="wrap tgs-scm-import-page">
+			<h1>Import user website TGS</h1>
+			<p class="description">File .xlsx can co 4 cot: website, ma website, ten dang nhap, mat khau. Ma website dung de tim blog_id trong bang blogs, user se duoc gan role administrator rieng cho website do.</p>
+
+			<?php self::render_import_controls( 'users' ); ?>
+		</div>
+		<?php
+	}
+
+	private static function render_import_controls( $kind = 'sites' ) {
+		$is_user_import = 'users' === $kind;
+		$import_label   = $is_user_import ? 'Import user' : 'Import website';
+		?>
+		<div class="tgs-scm-import-panel" data-import-kind="<?php echo esc_attr( $is_user_import ? 'users' : 'sites' ); ?>">
 			<div class="tgs-scm-import-controls">
 				<label class="tgs-scm-file-picker" for="tgs-scm-excel-file">
 					<span>Chon file Excel</span>
@@ -509,7 +680,7 @@ final class TGS_Site_Code_Manager {
 				</label>
 
 				<button type="button" class="button" id="tgs-scm-preview-button" disabled>Kiem tra truoc du lieu</button>
-				<button type="button" class="button button-primary" id="tgs-scm-import-button" disabled>Import website</button>
+				<button type="button" class="button button-primary" id="tgs-scm-import-button" disabled><?php echo esc_html( $import_label ); ?></button>
 				<button type="button" class="button tgs-scm-stop-button" id="tgs-scm-stop-button" disabled hidden>Dung import</button>
 			</div>
 
@@ -528,12 +699,22 @@ final class TGS_Site_Code_Manager {
 			<table class="widefat striped tgs-scm-preview-table" id="tgs-scm-preview-table" hidden>
 				<thead>
 					<tr>
-						<th>Dong</th>
-						<th>Website</th>
-						<th>Ma</th>
-						<th>Tieu de</th>
-						<th>Email</th>
-						<th>Trang thai</th>
+						<?php if ( $is_user_import ) : ?>
+							<th data-field="row_number">Dong</th>
+							<th data-field="website">Website</th>
+							<th data-field="code">Ma</th>
+							<th data-field="blog_id">Blog ID</th>
+							<th data-field="username">Ten dang nhap</th>
+							<th data-field="email">Email</th>
+							<th data-field="message">Trang thai</th>
+						<?php else : ?>
+							<th data-field="row_number">Dong</th>
+							<th data-field="website">Website</th>
+							<th data-field="code">Ma</th>
+							<th data-field="title">Tieu de</th>
+							<th data-field="email">Email</th>
+							<th data-field="message">Trang thai</th>
+						<?php endif; ?>
 					</tr>
 				</thead>
 				<tbody></tbody>
@@ -542,11 +723,20 @@ final class TGS_Site_Code_Manager {
 		<?php
 	}
 
-	private static function check_ajax_permission() {
+	private static function check_ajax_permission( $capabilities = 'create_sites' ) {
 		check_ajax_referer( 'tgs_scm_admin', 'nonce' );
 
-		if ( ! is_multisite() || ! current_user_can( 'create_sites' ) ) {
-			wp_send_json_error( array( 'message' => 'Ban khong co quyen tao site.' ), 403 );
+		$capabilities = (array) $capabilities;
+		$allowed      = false;
+		foreach ( $capabilities as $capability ) {
+			if ( current_user_can( $capability ) ) {
+				$allowed = true;
+				break;
+			}
+		}
+
+		if ( ! is_multisite() || ! $allowed ) {
+			wp_send_json_error( array( 'message' => 'Ban khong co quyen thuc hien thao tac nay.' ), 403 );
 		}
 
 		self::ensure_schema();
@@ -967,10 +1157,194 @@ final class TGS_Site_Code_Manager {
 		);
 	}
 
+	private static function build_user_import_preview( $rows ) {
+		$header_index = self::find_user_header_index( $rows );
+		$headers      = array(
+			'website'  => 0,
+			'code'     => 1,
+			'username' => 2,
+			'password' => 3,
+		);
+		$start_index  = 0;
+
+		if ( -1 !== $header_index ) {
+			$headers = self::map_user_headers( $rows[ $header_index ] );
+			$start_index = $header_index + 1;
+		}
+
+		$required_error = '';
+		if ( ! isset( $headers['website'] ) ) {
+			$required_error = 'Khong thay cot website.';
+		} elseif ( ! isset( $headers['code'] ) ) {
+			$required_error = 'Khong thay cot ma website.';
+		} elseif ( ! isset( $headers['username'] ) ) {
+			$required_error = 'Khong thay cot ten dang nhap.';
+		} elseif ( ! isset( $headers['password'] ) ) {
+			$required_error = 'Khong thay cot mat khau.';
+		}
+
+		if ( '' !== $required_error ) {
+			return array(
+				'has_errors' => true,
+				'summary'    => array(
+					'total'   => 0,
+					'valid'   => 0,
+					'skipped' => 0,
+					'errors'  => 1,
+				),
+				'rows'       => array(
+					array(
+						'row_number' => max( 1, $header_index + 1 ),
+						'website'    => '',
+						'code'       => '',
+						'blog_id'    => '',
+						'username'   => '',
+						'email'      => '',
+						'status'     => 'error',
+						'message'    => $required_error,
+					),
+				),
+				'valid_rows' => array(),
+			);
+		}
+
+		$seen_pairs   = array();
+		$display_rows = array();
+		$valid_rows   = array();
+		$total        = 0;
+		$valid        = 0;
+		$skipped      = 0;
+		$errors       = 0;
+
+		for ( $i = $start_index; $i < count( $rows ); $i++ ) {
+			$row = $rows[ $i ];
+			if ( self::row_is_empty( $row ) ) {
+				continue;
+			}
+
+			$total++;
+
+			$website = self::normalize_website_slug( self::cell_value( $row, $headers['website'] ) );
+			$code    = self::normalize_code( self::cell_value( $row, $headers['code'] ) );
+			$username = self::normalize_username( self::cell_value( $row, $headers['username'] ) );
+			$password = trim( (string) self::cell_value( $row, $headers['password'] ) );
+			$email    = self::default_email_for_website_or_username( $website, $username );
+			$blog_id  = 0;
+			$message  = '';
+			$valid_message = 'San sang tao user.';
+			$status   = 'valid';
+
+			if ( '' === $website ) {
+				$status = 'skip';
+				$message = 'Dong khong co website, bo qua.';
+			} elseif ( '' === $code ) {
+				$status = 'error';
+				$message = 'Thieu ma website.';
+			} elseif ( '' === $username ) {
+				$status = 'error';
+				$message = 'Thieu ten dang nhap.';
+			} elseif ( '' === $password ) {
+				$status = 'error';
+				$message = 'Thieu mat khau.';
+			} else {
+				$code_validation = self::validate_code_format( $code );
+				if ( is_wp_error( $code_validation ) ) {
+					$status = 'error';
+					$message = $code_validation->get_error_message();
+				} elseif ( ! validate_username( $username ) ) {
+					$status = 'error';
+					$message = 'Ten dang nhap khong hop le.';
+				} elseif ( strlen( $password ) < 4 ) {
+					$status = 'error';
+					$message = 'Mat khau qua ngan.';
+				} else {
+					$blog_id = self::get_blog_id_by_code( $code );
+					if ( ! $blog_id ) {
+						$status = 'error';
+						$message = 'Khong tim thay website theo ma trong DB.';
+					} elseif ( ! self::site_matches_website_slug( $blog_id, $website ) ) {
+						$status = 'error';
+						$message = 'Website khong khop voi ma website trong DB.';
+					} else {
+						$pair_key = $blog_id . '|' . strtolower( $username );
+						if ( isset( $seen_pairs[ $pair_key ] ) ) {
+							$status = 'error';
+							$message = 'User bi trung trong file voi dong ' . $seen_pairs[ $pair_key ] . '.';
+						} else {
+							$user_id = username_exists( $username );
+							if ( $user_id && is_user_member_of_blog( (int) $user_id, (int) $blog_id ) ) {
+								$status = 'skip';
+								$message = 'User da ton tai trong website nay, bo qua.';
+							} elseif ( $user_id ) {
+								$valid_message = 'User da ton tai global, se them vao website va cap nhat mat khau.';
+							}
+						}
+					}
+				}
+			}
+
+			if ( 'valid' === $status ) {
+				$seen_pairs[ $blog_id . '|' . strtolower( $username ) ] = $i + 1;
+				$valid++;
+				$message = $valid_message;
+				$valid_rows[] = array(
+					'row_number' => $i + 1,
+					'website'    => $website,
+					'code'       => $code,
+					'blog_id'    => (int) $blog_id,
+					'username'   => $username,
+					'password'   => $password,
+					'email'      => $email,
+				);
+			} elseif ( 'skip' === $status ) {
+				$skipped++;
+			} else {
+				$errors++;
+				if ( $blog_id && '' !== $username ) {
+					$seen_pairs[ $blog_id . '|' . strtolower( $username ) ] = $i + 1;
+				}
+			}
+
+			$display_rows[] = array(
+				'row_number' => $i + 1,
+				'website'    => $website,
+				'code'       => $code,
+				'blog_id'    => $blog_id ? (int) $blog_id : '',
+				'username'   => $username,
+				'email'      => $email,
+				'status'     => $status,
+				'message'    => $message,
+			);
+		}
+
+		return array(
+			'has_errors' => $errors > 0,
+			'summary'    => array(
+				'total'   => $total,
+				'valid'   => $valid,
+				'skipped' => $skipped,
+				'errors'  => $errors,
+			),
+			'rows'       => $display_rows,
+			'valid_rows' => $valid_rows,
+		);
+	}
+
 	private static function find_header_index( $rows ) {
 		foreach ( $rows as $index => $row ) {
 			$headers = self::map_headers( $row );
 			if ( isset( $headers['website'] ) ) {
+				return (int) $index;
+			}
+		}
+
+		return -1;
+	}
+
+	private static function find_user_header_index( $rows ) {
+		foreach ( $rows as $index => $row ) {
+			$headers = self::map_user_headers( $row );
+			if ( isset( $headers['website'] ) && isset( $headers['code'] ) && isset( $headers['username'] ) ) {
 				return (int) $index;
 			}
 		}
@@ -1000,6 +1374,28 @@ final class TGS_Site_Code_Manager {
 		return $map;
 	}
 
+	private static function map_user_headers( $row ) {
+		$map = array();
+		foreach ( $row as $index => $value ) {
+			$key = self::normalize_header( $value );
+			if ( '' === $key ) {
+				continue;
+			}
+
+			if ( in_array( $key, array( 'website', 'site', 'siteurl', 'url', 'duongdan', 'duongdanwebsite', 'tenthumuc', 'prefix', 'tiento' ), true ) ) {
+				$map['website'] = $index;
+			} elseif ( in_array( $key, array( 'ma', 'mawebsite', 'macuahang', 'code', 'sitecode', 'websitecode' ), true ) ) {
+				$map['code'] = $index;
+			} elseif ( in_array( $key, array( 'tendangnhap', 'username', 'userlogin', 'login', 'taikhoan', 'account' ), true ) ) {
+				$map['username'] = $index;
+			} elseif ( in_array( $key, array( 'matkhau', 'password', 'pass', 'pwd' ), true ) ) {
+				$map['password'] = $index;
+			}
+		}
+
+		return $map;
+	}
+
 	private static function normalize_header( $value ) {
 		$value = strtolower( trim( (string) $value ) );
 		if ( function_exists( 'remove_accents' ) ) {
@@ -1020,6 +1416,51 @@ final class TGS_Site_Code_Manager {
 
 		$value = strtolower( $value );
 		return $value;
+	}
+
+	private static function normalize_username( $value ) {
+		$value = trim( (string) $value );
+		return sanitize_user( $value, true );
+	}
+
+	private static function default_email_for_website_or_username( $website, $username = '' ) {
+		$website = self::normalize_website_slug( $website );
+		$username = self::normalize_username( $username );
+		$local_part = '' !== $website ? $website : $username;
+		if ( '' === $local_part ) {
+			return '';
+		}
+
+		return sanitize_email( $local_part . '@gmail.com' );
+	}
+
+	private static function site_matches_website_slug( $blog_id, $website ) {
+		$blog_id = (int) $blog_id;
+		$website = self::normalize_website_slug( $website );
+
+		if ( $blog_id <= 0 || '' === $website ) {
+			return false;
+		}
+
+		$details = get_blog_details( $blog_id, false );
+		if ( ! $details ) {
+			return false;
+		}
+
+		$domain = strtolower( (string) $details->domain );
+		$path   = trim( (string) $details->path, '/' );
+		$last_path = '';
+		if ( '' !== $path ) {
+			$parts = explode( '/', $path );
+			$last_path = strtolower( end( $parts ) );
+		}
+
+		if ( $last_path === $website ) {
+			return true;
+		}
+
+		$domain_parts = explode( '.', preg_replace( '|^www\.|', '', $domain ) );
+		return isset( $domain_parts[0] ) && strtolower( $domain_parts[0] ) === $website;
 	}
 
 	private static function validate_site_slug_for_import( $website ) {
@@ -1162,6 +1603,106 @@ final class TGS_Site_Code_Manager {
 			'email'   => $email,
 			'url'     => get_site_url( (int) $blog_id ),
 		);
+	}
+
+	private static function create_user_from_import_row( $row ) {
+		$blog_id  = isset( $row['blog_id'] ) ? (int) $row['blog_id'] : 0;
+		$website  = isset( $row['website'] ) ? self::normalize_website_slug( $row['website'] ) : '';
+		$code     = isset( $row['code'] ) ? self::normalize_code( $row['code'] ) : '';
+		$username = isset( $row['username'] ) ? self::normalize_username( $row['username'] ) : '';
+		$password = isset( $row['password'] ) ? trim( (string) $row['password'] ) : '';
+		$email    = isset( $row['email'] ) ? sanitize_email( $row['email'] ) : self::default_email_for_website_or_username( $website, $username );
+
+		if ( $blog_id <= 0 ) {
+			$blog_id = self::get_blog_id_by_code( $code );
+		}
+
+		if ( $blog_id <= 0 ) {
+			return new WP_Error( 'missing_blog', 'Khong tim thay website theo ma trong DB.' );
+		}
+
+		if ( ! self::site_matches_website_slug( $blog_id, $website ) ) {
+			return new WP_Error( 'site_code_mismatch', 'Website khong khop voi ma website trong DB.' );
+		}
+
+		if ( '' === $username || ! validate_username( $username ) ) {
+			return new WP_Error( 'invalid_username', 'Ten dang nhap khong hop le.' );
+		}
+
+		if ( '' === $password ) {
+			return new WP_Error( 'missing_password', 'Thieu mat khau.' );
+		}
+
+		if ( ! is_email( $email ) ) {
+			return new WP_Error( 'invalid_email', 'Email user khong hop le.' );
+		}
+
+		$user_id = username_exists( $username );
+		if ( $user_id && is_user_member_of_blog( (int) $user_id, $blog_id ) ) {
+			return array(
+				'skipped'  => true,
+				'user_id'  => (int) $user_id,
+				'blog_id'  => $blog_id,
+				'website'  => $website,
+				'code'     => $code,
+				'username' => $username,
+				'email'    => $email,
+				'message'  => 'User da ton tai trong website nay, bo qua.',
+			);
+		}
+
+		if ( ! $user_id ) {
+			$existing_email_user = email_exists( $email );
+			if ( $existing_email_user ) {
+				$email = self::unique_email_for_username( '' !== $website ? $website : $username );
+			}
+
+			$user_id = wpmu_create_user( $username, $password, $email );
+			if ( false === $user_id ) {
+				return new WP_Error( 'user_create_failed', 'Co loi khi tao user.' );
+			}
+		} else {
+			wp_set_password( $password, (int) $user_id );
+		}
+
+		$added = add_user_to_blog( $blog_id, (int) $user_id, 'administrator' );
+		if ( is_wp_error( $added ) ) {
+			return $added;
+		}
+
+		if ( ! get_user_option( 'primary_blog', (int) $user_id ) ) {
+			update_user_option( (int) $user_id, 'primary_blog', $blog_id, true );
+		}
+
+		return array(
+			'user_id'  => (int) $user_id,
+			'blog_id'  => $blog_id,
+			'website'  => $website,
+			'code'     => $code,
+			'username' => $username,
+			'email'    => $email,
+			'role'     => 'administrator',
+			'url'      => get_admin_url( $blog_id ),
+		);
+	}
+
+	private static function unique_email_for_username( $username ) {
+		$username = self::normalize_username( $username );
+		$base     = '' !== $username ? $username : 'tgs-user';
+		$email    = sanitize_email( $base . '@gmail.com' );
+
+		if ( ! email_exists( $email ) ) {
+			return $email;
+		}
+
+		for ( $i = 1; $i <= 9999; $i++ ) {
+			$email = sanitize_email( $base . '+' . $i . '@gmail.com' );
+			if ( ! email_exists( $email ) ) {
+				return $email;
+			}
+		}
+
+		return sanitize_email( $base . '+' . time() . '@gmail.com' );
 	}
 
 	private static function cell_value( $row, $index ) {

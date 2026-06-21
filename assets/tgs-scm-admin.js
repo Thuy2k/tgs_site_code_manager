@@ -10,10 +10,32 @@
         hasErrors: true,
         importOffset: 0,
         importCreated: 0,
+        importSkipped: 0,
         importErrors: 0,
         importTotal: 0,
         isImporting: false,
         stopRequested: false
+    };
+
+    var importModes = {
+        sites: {
+            previewAction: 'tgs_scm_preview_import',
+            importAction: 'tgs_scm_import_sites',
+            importLabel: 'Import website',
+            importedLabel: 'website',
+            limit: 5,
+            importingText: 'Dang import site...',
+            doneText: 'Import thanh cong.'
+        },
+        users: {
+            previewAction: 'tgs_scm_preview_user_import',
+            importAction: 'tgs_scm_import_users',
+            importLabel: 'Import user',
+            importedLabel: 'user',
+            limit: 10,
+            importingText: 'Dang import user...',
+            doneText: 'Import user thanh cong.'
+        }
     };
 
     function text(key, fallback) {
@@ -22,6 +44,15 @@
 
     function normalizeCode(value) {
         return String(value || '').replace(/\s+/g, '').toUpperCase();
+    }
+
+    function getImportKind() {
+        var kind = $('.tgs-scm-import-panel').data('import-kind') || cfg.importKind || 'sites';
+        return importModes[kind] ? kind : 'sites';
+    }
+
+    function getImportMode() {
+        return importModes[getImportKind()];
     }
 
     function setCodeStatus(message, type) {
@@ -116,11 +147,12 @@
         state.hasErrors = true;
         state.importOffset = 0;
         state.importCreated = 0;
+        state.importSkipped = 0;
         state.importErrors = 0;
         state.importTotal = 0;
         state.isImporting = false;
         state.stopRequested = false;
-        $('#tgs-scm-import-button').prop('disabled', true).text('Import website');
+        $('#tgs-scm-import-button').prop('disabled', true).text(getImportMode().importLabel);
         $('#tgs-scm-stop-button').prop('disabled', true).prop('hidden', true);
         $('#tgs-scm-preview-summary').prop('hidden', true).empty();
         $('#tgs-scm-preview-table').prop('hidden', true).find('tbody').empty();
@@ -134,19 +166,22 @@
         $('#tgs-scm-progress-errors').prop('hidden', true).empty();
     }
 
-    function updateProgress(processed, total, created, errors) {
+    function updateProgress(processed, total, created, skipped, errors) {
         total = Number(total || 0);
         processed = Math.min(Number(processed || 0), total);
         created = Number(created || 0);
+        skipped = Number(skipped || 0);
         errors = Number(errors || 0);
 
         var percent = total > 0 ? Math.round((processed / total) * 100) : 0;
+        var mode = getImportMode();
         state.importTotal = total;
         $('#tgs-scm-import-progress').prop('hidden', false);
         $('#tgs-scm-progress-fill').css('width', percent + '%');
         $('#tgs-scm-progress-meta').text(
             'Tien do: ' + processed + '/' + total + ' dong hop le (' + percent + '%)'
-            + ' | Da tao: ' + created
+            + ' | Da import ' + mode.importedLabel + ': ' + created
+            + (skipped ? ' | Bo qua: ' + skipped : '')
             + ' | Loi khi tao: ' + errors
         );
     }
@@ -157,8 +192,9 @@
         var $box = $('#tgs-scm-progress-errors');
         $box.prop('hidden', false);
         errors.forEach(function (err) {
+            var identity = err.username || err.website || '';
             $('<div>')
-                .text('Dong ' + (err.row || '') + ' - ' + (err.website || '') + ' / ' + (err.code || '') + ': ' + (err.message || 'Loi khong xac dinh'))
+                .text('Dong ' + (err.row || '') + ' - ' + identity + ' / ' + (err.code || '') + ': ' + (err.message || 'Loi khong xac dinh'))
                 .appendTo($box);
         });
     }
@@ -186,6 +222,7 @@
         var formData = new FormData();
         formData.append('action', 'tgs_scm_upload_excel');
         formData.append('nonce', cfg.nonce);
+        formData.append('kind', getImportKind());
         formData.append('file', file);
 
         state.token = '';
@@ -227,22 +264,23 @@
 
         var $table = $('#tgs-scm-preview-table');
         var $tbody = $table.find('tbody').empty();
+        var fields = [];
+        $table.find('thead th[data-field]').each(function () {
+            fields.push($(this).data('field'));
+        });
+
         rows.forEach(function (row) {
-            var statusText = row.message || '';
             var $tr = $('<tr>').addClass('is-' + (row.status || ''));
-            $('<td>').text(row.row_number || '').appendTo($tr);
-            $('<td>').text(row.website || '').appendTo($tr);
-            $('<td>').text(row.code || '').appendTo($tr);
-            $('<td>').text(row.title || '').appendTo($tr);
-            $('<td>').text(row.email || '').appendTo($tr);
-            $('<td>').text(statusText).appendTo($tr);
+            fields.forEach(function (field) {
+                $('<td>').text(row[field] || '').appendTo($tr);
+            });
             $tbody.append($tr);
         });
         $table.prop('hidden', rows.length === 0);
 
         state.previewOk = true;
         state.hasErrors = !!data.has_errors;
-        $('#tgs-scm-import-button').prop('disabled', !summary.valid).text('Import website');
+        $('#tgs-scm-import-button').prop('disabled', !summary.valid).text(getImportMode().importLabel);
         if (summary.valid) {
             setImportStatus(state.hasErrors ? 'Co dong loi, nhung cac dong hop le van co the import.' : 'Du lieu sach, co the import.', state.hasErrors ? 'muted' : 'ok');
         } else {
@@ -265,8 +303,9 @@
         setImportStatus(text('previewing', 'Dang kiem tra du lieu...'), 'muted');
         $('#tgs-scm-preview-button').prop('disabled', true);
 
+        var mode = getImportMode();
         $.post(cfg.ajaxUrl, {
-            action: 'tgs_scm_preview_import',
+            action: mode.previewAction,
             nonce: cfg.nonce,
             token: state.token,
             sheet: sheet
@@ -284,16 +323,18 @@
         });
     }
 
-    function renderImportCounters(created, errors, processed, total) {
+    function renderImportCounters(created, skipped, errors, processed, total) {
         created = created || [];
+        skipped = skipped || [];
         errors = errors || [];
 
         var $summary = $('#tgs-scm-preview-summary');
         var current = $summary.text();
         state.importCreated += created.length;
+        state.importSkipped += skipped.length;
         state.importErrors += errors.length;
-        $summary.prop('hidden', false).text(current.replace(/\s\|\sDa tao:.*$/, '') + ' | Da tao: ' + state.importCreated + (total ? '/' + total : '') + ' | Loi tao: ' + state.importErrors);
-        updateProgress(processed, total, state.importCreated, state.importErrors);
+        $summary.prop('hidden', false).text(current.replace(/\s\|\sDa tao:.*$/, '') + ' | Da tao: ' + state.importCreated + (total ? '/' + total : '') + ' | Bo qua: ' + state.importSkipped + ' | Loi tao: ' + state.importErrors);
+        updateProgress(processed, total, state.importCreated, state.importSkipped, state.importErrors);
         appendImportErrors(errors);
     }
 
@@ -307,7 +348,7 @@
         setStopButton(false);
         $('#tgs-scm-import-button')
             .prop('disabled', !canResume)
-            .text(canResume && state.importOffset > 0 ? 'Tiep tuc import' : 'Import website');
+            .text(canResume && state.importOffset > 0 ? 'Tiep tuc import' : getImportMode().importLabel);
     }
 
     function pauseImport(total) {
@@ -332,18 +373,19 @@
 
         $('#tgs-scm-import-button, #tgs-scm-preview-button').prop('disabled', true);
         setStopButton(true);
-        setImportStatus(text('importing', 'Dang import site...'), 'muted');
+        var mode = getImportMode();
+        setImportStatus(mode.importingText || text('importing', 'Dang import site...'), 'muted');
 
         $.post(cfg.ajaxUrl, {
-            action: 'tgs_scm_import_sites',
+            action: mode.importAction,
             nonce: cfg.nonce,
             token: state.token,
             offset: state.importOffset,
-            limit: 5
+            limit: mode.limit || 5
         }).done(function (res) {
             if (!res || !res.success) {
                 var data = res && res.data ? res.data : {};
-                renderImportCounters(data.created || [], data.errors || [], data.next_offset || state.importOffset, data.total || 0);
+                renderImportCounters(data.created || [], data.skipped || [], data.errors || [], data.next_offset || state.importOffset, data.total || 0);
                 state.importOffset = data.next_offset || state.importOffset;
                 setImportIdle(!!(state.token && state.previewOk));
                 setImportStatus(data.message || 'Import bi dung lai.', 'error');
@@ -351,12 +393,12 @@
             }
 
             var data = res.data || {};
-            renderImportCounters(data.created || [], data.errors || [], data.next_offset || state.importOffset, data.total || 0);
+            renderImportCounters(data.created || [], data.skipped || [], data.errors || [], data.next_offset || state.importOffset, data.total || 0);
             state.importOffset = data.next_offset || state.importOffset;
 
             if (data.done) {
                 var finalType = state.importErrors ? 'muted' : 'ok';
-                setImportStatus((data.message || 'Import thanh cong.') + ' Da tao ' + state.importCreated + ' website, loi ' + state.importErrors + '.', finalType);
+                setImportStatus((data.message || mode.doneText) + ' Da tao ' + state.importCreated + ' ' + mode.importedLabel + ', bo qua ' + state.importSkipped + ', loi ' + state.importErrors + '.', finalType);
                 state.token = '';
                 state.previewOk = false;
                 setImportIdle(false);
@@ -369,7 +411,7 @@
                 return;
             }
 
-            setImportStatus(data.message || ('Da import ' + state.importOffset + '/' + (data.total || 0) + ' website.'), 'muted');
+            setImportStatus(data.message || ('Da import ' + state.importOffset + '/' + (data.total || 0) + ' ' + mode.importedLabel + '.'), 'muted');
             window.setTimeout(importSitesBatch, 250);
         }).fail(function () {
             setImportIdle(!!(state.token && state.previewOk));
@@ -391,10 +433,11 @@
             return;
         }
 
-        var isResume = state.importOffset > 0 || state.importCreated > 0 || state.importErrors > 0;
+        var isResume = state.importOffset > 0 || state.importCreated > 0 || state.importSkipped > 0 || state.importErrors > 0;
         if (!isResume) {
             state.importOffset = 0;
             state.importCreated = 0;
+            state.importSkipped = 0;
             state.importErrors = 0;
             state.importTotal = 0;
             resetProgress();
