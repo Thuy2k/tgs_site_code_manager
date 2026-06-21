@@ -20,6 +20,8 @@ final class TGS_Site_Code_Manager {
 	const COLUMN_SITE_CODE = 'tgs_site_code';
 	const OPTION_SITE_CODE = 'tgs_website_code';
 	const NETWORK_TIME_SETTINGS_OPTION = 'tgs_scm_network_time_settings';
+	const TGS_SHOP_FEATURE_OPTION = 'tgs_admin_feature_settings';
+	const TGS_SHOP_LANDING_FEATURE = 'landing_page_takeover';
 	const TRANSIENT_PREFIX = 'tgs_scm_import_';
 	const IMPORT_TTL       = 3600;
 
@@ -43,6 +45,7 @@ final class TGS_Site_Code_Manager {
 		add_action( 'wp_ajax_tgs_scm_preview_user_import', array( __CLASS__, 'ajax_preview_user_import' ) );
 		add_action( 'wp_ajax_tgs_scm_import_users', array( __CLASS__, 'ajax_import_users' ) );
 		add_action( 'wp_ajax_tgs_scm_apply_time_settings', array( __CLASS__, 'ajax_apply_time_settings' ) );
+		add_action( 'wp_ajax_tgs_scm_apply_landing_page', array( __CLASS__, 'ajax_apply_landing_page' ) );
 	}
 
 	public static function activate( $network_wide ) {
@@ -125,6 +128,15 @@ final class TGS_Site_Code_Manager {
 			'tgs-network-time-settings',
 			array( __CLASS__, 'render_time_settings_page' )
 		);
+
+		add_submenu_page(
+			'settings.php',
+			'Kich hoat trang chu quan ly',
+			'Kich hoat trang chu quan ly',
+			'manage_network_options',
+			'tgs-network-landing-page',
+			array( __CLASS__, 'render_landing_page_settings_page' )
+		);
 	}
 
 	public static function enqueue_assets( $hook_suffix ) {
@@ -137,8 +149,9 @@ final class TGS_Site_Code_Manager {
 		$is_import   = false !== strpos( (string) $hook_suffix, 'tgs-site-code-import' );
 		$is_user_import = false !== strpos( (string) $hook_suffix, 'tgs-site-user-import' );
 		$is_time_settings = false !== strpos( (string) $hook_suffix, 'tgs-network-time-settings' );
+		$is_landing_page = false !== strpos( (string) $hook_suffix, 'tgs-network-landing-page' );
 
-		if ( ! $is_site_new && ! $is_import && ! $is_user_import && ! $is_time_settings ) {
+		if ( ! $is_site_new && ! $is_import && ! $is_user_import && ! $is_time_settings && ! $is_landing_page ) {
 			return;
 		}
 
@@ -167,6 +180,7 @@ final class TGS_Site_Code_Manager {
 				'isImport'    => $is_import,
 				'isUserImport' => $is_user_import,
 				'isTimeSettings' => $is_time_settings,
+				'isLandingPage' => $is_landing_page,
 				'importKind'   => $is_user_import ? 'users' : 'sites',
 				'networkHome' => network_home_url(),
 				'i18n'        => array(
@@ -272,6 +286,7 @@ final class TGS_Site_Code_Manager {
 		}
 
 		$args['options'] = self::merge_time_settings_into_options( $args['options'] );
+		$args['options'] = self::merge_landing_page_into_options( $args['options'] );
 
 		return $args;
 	}
@@ -727,6 +742,68 @@ final class TGS_Site_Code_Manager {
 		);
 	}
 
+	public static function ajax_apply_landing_page() {
+		self::check_ajax_permission( 'manage_network_options' );
+
+		$offset = isset( $_POST['offset'] ) ? max( 0, absint( $_POST['offset'] ) ) : 0;
+		$limit  = isset( $_POST['limit'] ) ? max( 1, min( 100, absint( $_POST['limit'] ) ) ) : 50;
+		$total  = (int) get_sites(
+			array(
+				'count'    => true,
+				'number'   => 0,
+				'archived' => 0,
+				'spam'     => 0,
+				'deleted'  => 0,
+			)
+		);
+
+		if ( $offset >= $total ) {
+			wp_send_json_success(
+				array(
+					'message'     => 'Da kich hoat trang chu quan ly cho toan bo website.',
+					'updated'     => 0,
+					'offset'      => $offset,
+					'next_offset' => $offset,
+					'total'       => $total,
+					'done'        => true,
+				)
+			);
+		}
+
+		$blog_ids = get_sites(
+			array(
+				'fields'   => 'ids',
+				'number'   => $limit,
+				'offset'   => $offset,
+				'orderby'  => 'id',
+				'order'    => 'ASC',
+				'archived' => 0,
+				'spam'     => 0,
+				'deleted'  => 0,
+			)
+		);
+
+		$updated = 0;
+		foreach ( $blog_ids as $blog_id ) {
+			self::apply_landing_page_to_site( (int) $blog_id );
+			$updated++;
+		}
+
+		$next_offset = $offset + count( $blog_ids );
+		$done        = $next_offset >= $total;
+
+		wp_send_json_success(
+			array(
+				'message'     => $done ? 'Da kich hoat trang chu quan ly cho toan bo website.' : 'Da xu ly ' . $next_offset . '/' . $total . ' website.',
+				'updated'     => $updated,
+				'offset'      => $offset,
+				'next_offset' => $next_offset,
+				'total'       => $total,
+				'done'        => $done,
+			)
+		);
+	}
+
 	public static function render_import_page() {
 		if ( ! current_user_can( 'create_sites' ) ) {
 			wp_die( esc_html__( 'Sorry, you are not allowed to add sites to this network.', 'tgs-site-code-manager' ) );
@@ -737,6 +814,34 @@ final class TGS_Site_Code_Manager {
 			<p class="description">File .xlsx can co cac cot: website, ma, ten/tieu de website, email website. Import se tao tung site lan luot theo luong tao site chuan cua WordPress.</p>
 
 			<?php self::render_import_controls( 'sites' ); ?>
+		</div>
+		<?php
+	}
+
+	public static function render_landing_page_settings_page() {
+		if ( ! current_user_can( 'manage_network_options' ) ) {
+			wp_die( esc_html__( 'Sorry, you are not allowed to manage network options.', 'tgs-site-code-manager' ) );
+		}
+		?>
+		<div class="wrap tgs-scm-landing-page">
+			<h1>Kich hoat trang chu quan ly</h1>
+			<p class="description">Chuc nang nay ghi that option <code><?php echo esc_html( self::TGS_SHOP_LANDING_FEATURE ); ?></code> cua plugin TGS Shop Management tren tung website, tranh tinh trang toggle hien bat nhung DB chua co key.</p>
+
+			<div class="tgs-scm-action-panel">
+				<h2>Trang chu dieu huong TGS Shop</h2>
+				<p>Khi bat, trang chu website se hien giao dien dieu huong nhanh POS va trang quan tri thay cho blog WordPress mac dinh.</p>
+				<p>
+					<button type="button" class="button button-primary" id="tgs-scm-apply-landing-page">Bat trang chu quan ly cho toan bo website</button>
+				</p>
+			</div>
+
+			<div id="tgs-scm-landing-apply-status" class="tgs-scm-import-status" role="status"></div>
+			<div id="tgs-scm-landing-apply-progress" class="tgs-scm-import-progress" hidden>
+				<div class="tgs-scm-progress-track">
+					<span id="tgs-scm-landing-apply-fill" class="tgs-scm-progress-fill" style="width: 0%;"></span>
+				</div>
+				<div id="tgs-scm-landing-apply-meta" class="tgs-scm-progress-meta">Chua ap dung.</div>
+			</div>
 		</div>
 		<?php
 	}
@@ -1019,6 +1124,25 @@ final class TGS_Site_Code_Manager {
 		return array_merge( $options, self::time_settings_to_blog_options( $settings ) );
 	}
 
+	private static function merge_landing_page_into_options( $options ) {
+		$feature_settings = array();
+		if ( isset( $options[ self::TGS_SHOP_FEATURE_OPTION ] ) && is_array( $options[ self::TGS_SHOP_FEATURE_OPTION ] ) ) {
+			$feature_settings = $options[ self::TGS_SHOP_FEATURE_OPTION ];
+		}
+
+		$options[ self::TGS_SHOP_FEATURE_OPTION ] = self::enable_landing_page_feature( $feature_settings );
+		return $options;
+	}
+
+	private static function enable_landing_page_feature( $settings ) {
+		if ( ! is_array( $settings ) ) {
+			$settings = array();
+		}
+
+		$settings[ self::TGS_SHOP_LANDING_FEATURE ] = true;
+		return $settings;
+	}
+
 	private static function time_settings_to_blog_options( $settings ) {
 		return array(
 			'timezone_string' => $settings['timezone_string'],
@@ -1041,6 +1165,20 @@ final class TGS_Site_Code_Manager {
 		}
 
 		clean_blog_cache( $blog_id );
+		return true;
+	}
+
+	private static function apply_landing_page_to_site( $blog_id ) {
+		$blog_id = (int) $blog_id;
+		if ( $blog_id <= 0 ) {
+			return false;
+		}
+
+		$settings = get_blog_option( $blog_id, self::TGS_SHOP_FEATURE_OPTION, array() );
+		$settings = self::enable_landing_page_feature( $settings );
+		update_blog_option( $blog_id, self::TGS_SHOP_FEATURE_OPTION, $settings );
+		clean_blog_cache( $blog_id );
+
 		return true;
 	}
 
@@ -1896,6 +2034,7 @@ final class TGS_Site_Code_Manager {
 			'admin_email'            => $email,
 		);
 		$meta = self::merge_time_settings_into_options( $meta );
+		$meta = self::merge_landing_page_into_options( $meta );
 
 		self::$pending_site_code = $code;
 		$key = strtolower( $newdomain . '|' . trailingslashit( $path ) );

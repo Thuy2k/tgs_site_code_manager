@@ -23,6 +23,12 @@
         running: false
     };
 
+    var landingApplyState = {
+        offset: 0,
+        updated: 0,
+        running: false
+    };
+
     var importModes = {
         sites: {
             previewAction: 'tgs_scm_preview_import',
@@ -570,9 +576,85 @@
         $('#tgs-scm-apply-time-settings').on('click', startTimeApply);
     }
 
+    function setLandingApplyStatus(message, type) {
+        var $status = $('#tgs-scm-landing-apply-status');
+        if (!$status.length) return;
+
+        $status
+            .removeClass('is-ok is-error is-muted')
+            .addClass(type ? 'is-' + type : 'is-muted')
+            .text(message || '');
+    }
+
+    function updateLandingApplyProgress(processed, total) {
+        total = Number(total || 0);
+        processed = Math.min(Number(processed || 0), total);
+
+        var percent = total > 0 ? Math.round((processed / total) * 100) : 0;
+        $('#tgs-scm-landing-apply-progress').prop('hidden', false);
+        $('#tgs-scm-landing-apply-fill').css('width', percent + '%');
+        $('#tgs-scm-landing-apply-meta').text('Tien do: ' + processed + '/' + total + ' website (' + percent + '%)');
+    }
+
+    function applyLandingPageBatch() {
+        $.post(cfg.ajaxUrl, {
+            action: 'tgs_scm_apply_landing_page',
+            nonce: cfg.nonce,
+            offset: landingApplyState.offset,
+            limit: 50
+        }).done(function (res) {
+            if (!res || !res.success) {
+                landingApplyState.running = false;
+                $('#tgs-scm-apply-landing-page').prop('disabled', false);
+                setLandingApplyStatus((res && res.data && res.data.message) || 'Kich hoat trang chu quan ly that bai.', 'error');
+                return;
+            }
+
+            var data = res.data || {};
+            landingApplyState.offset = data.next_offset || landingApplyState.offset;
+            landingApplyState.updated += Number(data.updated || 0);
+            updateLandingApplyProgress(landingApplyState.offset, data.total || 0);
+
+            if (data.done) {
+                landingApplyState.running = false;
+                $('#tgs-scm-apply-landing-page').prop('disabled', false);
+                setLandingApplyStatus((data.message || 'Da kich hoat trang chu quan ly cho toan bo website.') + ' Tong so website da xu ly: ' + landingApplyState.updated + '.', 'ok');
+                return;
+            }
+
+            setLandingApplyStatus(data.message || 'Dang kich hoat trang chu quan ly...', 'muted');
+            window.setTimeout(applyLandingPageBatch, 200);
+        }).fail(function () {
+            landingApplyState.running = false;
+            $('#tgs-scm-apply-landing-page').prop('disabled', false);
+            setLandingApplyStatus('Kich hoat trang chu quan ly that bai.', 'error');
+        });
+    }
+
+    function startLandingApply() {
+        if (landingApplyState.running) return;
+
+        landingApplyState.offset = 0;
+        landingApplyState.updated = 0;
+        landingApplyState.running = true;
+        $('#tgs-scm-landing-apply-progress').prop('hidden', true);
+        $('#tgs-scm-landing-apply-fill').css('width', '0%');
+        $('#tgs-scm-landing-apply-meta').text('Chua ap dung.');
+        $('#tgs-scm-apply-landing-page').prop('disabled', true);
+        setLandingApplyStatus('Dang kich hoat trang chu quan ly cho toan bo website...', 'muted');
+        applyLandingPageBatch();
+    }
+
+    function bindLandingPageUi() {
+        if (!$('#tgs-scm-apply-landing-page').length) return;
+
+        $('#tgs-scm-apply-landing-page').on('click', startLandingApply);
+    }
+
     $(function () {
         bindSiteCodeValidation();
         bindImportUi();
         bindTimeSettingsUi();
+        bindLandingPageUi();
     });
 })(jQuery);

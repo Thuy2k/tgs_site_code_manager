@@ -39,6 +39,18 @@
 	background: #fff;
 }
 
+.tgs-scm-action-panel {
+	margin: 18px 0;
+	padding: 16px;
+	max-width: 760px;
+	border: 1px solid #c3c4c7;
+	background: #fff;
+}
+
+.tgs-scm-action-panel h2 {
+	margin-top: 0;
+}
+
 .tgs-scm-import-controls {
 	display: flex;
 	flex-wrap: wrap;
