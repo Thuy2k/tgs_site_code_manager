@@ -1,0 +1,171 @@
+.tgs-scm-site-code-table {
+	margin-top: 18px;
+}
+
+.tgs-scm-field-status {
+	margin: 6px 0 0;
+	font-weight: 600;
+}
+
+.tgs-scm-field-status.is-ok,
+.tgs-scm-import-status.is-ok {
+	color: #008a20;
+}
+
+.tgs-scm-field-status.is-error,
+.tgs-scm-import-status.is-error {
+	color: #b32d2e;
+}
+
+.tgs-scm-field-status.is-muted,
+.tgs-scm-import-status.is-muted {
+	color: #646970;
+}
+
+.tgs-scm-site-new-import {
+	margin: 18px 0 6px;
+	padding-top: 14px;
+	border-top: 1px solid #dcdcde;
+}
+
+.tgs-scm-inline-import {
+	margin-top: 14px;
+}
+
+.tgs-scm-import-panel {
+	margin: 18px 0;
+	padding: 16px;
+	border: 1px solid #c3c4c7;
+	background: #fff;
+}
+
+.tgs-scm-import-controls {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 12px;
+	align-items: center;
+}
+
+.tgs-scm-file-picker {
+	display: inline-flex;
+	gap: 8px;
+	align-items: center;
+}
+
+.tgs-scm-file-picker span,
+.tgs-scm-sheet-label {
+	font-weight: 600;
+}
+
+.tgs-scm-file-picker input {
+	max-width: 280px;
+}
+
+.tgs-scm-sheet-label {
+	display: inline-flex;
+	gap: 8px;
+	align-items: center;
+}
+
+.tgs-scm-sheet-label select {
+	min-width: 180px;
+	max-width: 260px;
+}
+
+.tgs-scm-stop-button {
+	border-color: #b32d2e;
+	color: #b32d2e;
+}
+
+.tgs-scm-import-status {
+	margin-top: 12px;
+	min-height: 20px;
+	font-weight: 600;
+}
+
+.tgs-scm-import-progress {
+	margin-top: 14px;
+}
+
+.tgs-scm-progress-track {
+	position: relative;
+	width: 100%;
+	height: 18px;
+	overflow: hidden;
+	border-radius: 4px;
+	background: #dcdcde;
+}
+
+.tgs-scm-progress-fill {
+	display: block;
+	height: 100%;
+	background: #2271b1;
+	transition: width 180ms ease;
+}
+
+.tgs-scm-progress-meta {
+	margin-top: 8px;
+	font-weight: 600;
+	color: #1d2327;
+}
+
+.tgs-scm-progress-errors {
+	margin-top: 8px;
+	padding: 8px 10px;
+	max-height: 180px;
+	overflow: auto;
+	border-left: 4px solid #b32d2e;
+	background: #fcf0f1;
+	color: #8a2424;
+}
+
+.tgs-scm-progress-errors div + div {
+	margin-top: 4px;
+}
+
+.tgs-scm-preview-summary {
+	margin: 12px 0;
+	padding: 10px 12px;
+	border-left: 4px solid #2271b1;
+	background: #f6f7f7;
+	font-weight: 600;
+}
+
+.tgs-scm-preview-wrap {
+	overflow-x: auto;
+}
+
+.tgs-scm-preview-table th,
+.tgs-scm-preview-table td {
+	vertical-align: top;
+}
+
+.tgs-scm-preview-table tr.is-valid td:last-child {
+	color: #008a20;
+	font-weight: 600;
+}
+
+.tgs-scm-preview-table tr.is-skip td:last-child {
+	color: #646970;
+	font-weight: 600;
+}
+
+.tgs-scm-preview-table tr.is-error td:last-child {
+	color: #b32d2e;
+	font-weight: 600;
+}
+
+@media (max-width: 782px) {
+	.tgs-scm-import-controls,
+	.tgs-scm-file-picker,
+	.tgs-scm-sheet-label {
+		display: grid;
+		width: 100%;
+	}
+
+	.tgs-scm-file-picker input,
+	.tgs-scm-sheet-label select {
+		max-width: 100%;
+		width: 100%;
+	}
+}
